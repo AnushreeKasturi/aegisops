@@ -1,14 +1,17 @@
 """Catalogue validation, flag toggling, and the runner against a fake API (E7.1, E7.2)."""
 
 import json
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import structlog
 
 from aegisops_bench.catalogue import FlagFault, NoFault, OverlayFault, ScenarioSet, load_catalogue
+from aegisops_bench.cli import main
 from aegisops_bench.flags import current_variant, set_flag
 from aegisops_bench.runner import Runner
 
@@ -52,6 +55,37 @@ def test_catalogue_rejects_inconsistent_entries(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="duplicate"):
         load_catalogue(bad)
+
+
+@pytest.fixture
+def run_cli(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Any]]:
+    def run(*args: str) -> Any:
+        monkeypatch.setattr("sys.argv", ["aegis-scenario", *args])
+        with pytest.raises(SystemExit) as exit_info:
+            main()
+        return exit_info.value.code
+
+    yield run
+    structlog.reset_defaults()  # main() points structlog at the test's stderr; undo that
+
+
+def test_show_prints_an_existing_scenario(
+    run_cli: Callable[..., Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_cli("show", "s5") == 0  # key match ignores case
+    out = capsys.readouterr().out
+    assert "recommendationCacheFailure = on" in out and "memory_leak" in out
+    assert "hold_s 300s" in out and "incident_timeout_s 300s" in out
+    assert "warmup" not in out  # S5 does not set it, so it is left out
+    assert "inject log" not in out  # nor is the inject log, which only S13 has
+
+
+def test_show_fails_for_an_unknown_key(
+    run_cli: Callable[..., Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_cli("show", "S99") == 1
+    err = capsys.readouterr().err
+    assert "unknown scenario 'S99'" in err and "S1, S2" in err and "N3, S13" in err
 
 
 def test_set_flag_roundtrip(tmp_path: Path) -> None:

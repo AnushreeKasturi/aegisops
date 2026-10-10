@@ -102,6 +102,7 @@ Run a scenario end to end and replay it:
 
 ```bash
 uv run aegis-scenario list                     # S1–S8 dev, S9–S12 held-out, N1–N3 noise, S13 injection
+uv run aegis-scenario show S5                 # one scenario's fault, expectations and timing
 uv run aegis-scenario run S1 --admin-token $AEGIS_ADMIN_TOKEN   # fault → incident (TTD) → revert → capture
 uv run aegis-scenario investigate S1           # replay the agent on the captured window, clock frozen
 uv run aegis-scenario export S1                # bench/fixtures/S1.jsonl.gz for CI / the public demo
