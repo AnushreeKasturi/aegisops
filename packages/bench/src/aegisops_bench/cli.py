@@ -1,6 +1,7 @@
 """aegis-scenario: list | run | capture-export | import | investigate
 
 aegis-scenario list
+aegis-scenario show S1
 aegis-scenario run S1 --api http://localhost:8000 --admin-token $AEGIS_ADMIN_TOKEN
 aegis-scenario export S1            -> bench/fixtures/S1.jsonl.gz
 aegis-scenario import bench/fixtures/S1.jsonl.gz
@@ -22,7 +23,14 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from aegisops_bench.catalogue import DEFAULT_PATH, load_catalogue
+from aegisops_bench.catalogue import (
+    DEFAULT_PATH,
+    Catalogue,
+    FlagFault,
+    NoFault,
+    OverlayFault,
+    load_catalogue,
+)
 from aegisops_bench.fixtures import export_scenario, import_scenario
 from aegisops_bench.runner import Runner
 from aegisops_tools.db import engine_from_env, session_factory
@@ -125,12 +133,54 @@ def _investigate(args: argparse.Namespace) -> int:
     return subprocess.call(cmd)  # noqa: S603 - fixed argv, no shell
 
 
+def _describe_fault(fault: FlagFault | OverlayFault | NoFault) -> str:
+    if isinstance(fault, FlagFault):
+        return f"flag {fault.flag} = {fault.variant} (reverts to {fault.revert})"
+    if isinstance(fault, OverlayFault):
+        return f"overlay {fault.name}" + ("" if fault.available else " (not built yet)")
+    return "none"
+
+
+def _show(cat: Catalogue, key: str) -> int:
+    """Print one scenario's definition. Unset fields are left out; the key match ignores case."""
+    spec = next((s for s in cat.scenarios if s.key.upper() == key.upper()), None)
+    if spec is None:
+        valid = ", ".join(s.key for s in cat.scenarios)
+        print(f"unknown scenario {key!r}; valid keys: {valid}", file=sys.stderr)
+        return 1
+    # only the timing fields the YAML sets; the defaults are not the scenario's own
+    timing = ", ".join(f"{k} {v}s" for k, v in spec.timing.model_dump(exclude_unset=True).items())
+    inject = None
+    if spec.inject_log is not None:
+        log = spec.inject_log
+        inject = f"{log.service} log (severity {log.severity_num}): {log.body}"
+    rows = [
+        ("key", spec.key),
+        ("title", spec.title),
+        ("set", spec.set.value),
+        ("fault", _describe_fault(spec.fault)),
+        ("inject log", inject),
+        ("expected service", spec.expected_service),
+        ("expected category", spec.expected_category),
+        ("expected actions", ", ".join(spec.expected_actions) or None),
+        ("timing", timing or None),
+        ("notes", spec.notes or None),
+    ]
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        if value is not None:
+            print(f"{label:{width}s}  {value}")
+    return 0
+
+
 def main() -> None:
     structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
     p = argparse.ArgumentParser(prog="aegis-scenario")
     p.add_argument("--catalogue", default=str(DEFAULT_PATH))
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
+    sh = sub.add_parser("show")
+    sh.add_argument("key")
     r = sub.add_parser("run")
     r.add_argument("key")
     r.add_argument("--api", default=os.environ.get("AEGIS_API", "http://localhost:8000"))
@@ -153,6 +203,8 @@ def main() -> None:
                 f"{sc.expected_service or '-':16s} {sc.expected_category or '-':20s} {sc.title}"
             )
         sys.exit(0)
+    if args.cmd == "show":
+        sys.exit(_show(load_catalogue(args.catalogue), args.key))
     if args.cmd == "investigate":
         sys.exit(_investigate(args))
     fn = {"run": _run, "export": _export, "import": _import}[args.cmd]
